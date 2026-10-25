@@ -1,0 +1,141 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Photobooth Pro</title>
+<style>
+:root{--bg:#faf7f2;--card:#fff;--ink:#1d1b19;--mut:#6d675f;--ac:#d6336c;--ln:#e6e0d8;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17151a;--card:#232027;--ink:#f3eee8;--mut:#a69fa8;--ln:#38333c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#17151a;--card:#232027;--ink:#f3eee8;--mut:#a69fa8;--ln:#38333c;color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+nav{display:flex;gap:6px;padding:8px;overflow-x:auto;border-bottom:1px solid var(--ln);position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg);z-index:5}
+button{font:inherit;border:1px solid var(--ln);background:var(--card);color:var(--ink);padding:10px 16px;border-radius:12px;cursor:pointer;white-space:nowrap}
+button.on,button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+button.big{font-size:24px;padding:20px 40px}
+main{padding:16px;max-width:1000px;margin:auto}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:16px;padding:16px;margin-bottom:12px}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:10px}
+label{display:block;font-size:13px;color:var(--mut);margin-bottom:3px}
+input,select{font:inherit;width:100%;box-sizing:border-box;padding:9px;border:1px solid var(--ln);border-radius:10px;background:var(--bg);color:var(--ink)}
+input[type=checkbox]{width:22px;height:22px}input[type=color]{height:42px;padding:2px}
+.c{text-align:center}.box{position:relative;max-width:720px;margin:auto;min-height:30vh}
+video{width:100%;border-radius:16px;background:#000;display:none}
+#ov{position:absolute;inset:0;display:grid;place-items:center;font-size:150px;color:#fff;text-shadow:0 4px 24px #000;pointer-events:none}
+.th{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}.th img{width:100%;border-radius:8px;background:#fff}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 18px;border-radius:20px;display:none;z-index:9}
+#pa{display:none}
+@media print{body>*:not(#pa){display:none!important}#pa{display:block}#pa img{width:100%;display:block;break-after:page}}
+</style><style id="pg"></style></head><body>
+<nav id="nav"></nav><main id="app"></main><div id="pa"></div><div id="toast"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const $=s=>document.querySelector(s),app=$("#app"),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const DEF={brand:"My Photobooth",header:"Our Event",footer:"Thank you!",bg:"#ffffff",ink:"#111111",paper:"2x6",pw:50.8,ph:152.4,dpi:300,copies:2,retakes:1,price:100,pay:"scan",pin:"1234",cd:3,bw:false,mirror:true,mono:true,remote:true,auto:false};
+const NT=()=>({name:"New template",cols:1,rows:4,header:"",footer:"Thank you!",bg:"#ffffff",ink:"#111111"});
+const TP=()=>S.tpls[Math.min(S.ti||0,S.tpls.length-1)];
+const PAPER={"58":[58,0,"58 mm roll (auto length)"],"80":[80,0,"80 mm roll (auto length)"],"4x6":[101.6,152.4,"4x6 in"],"2x6":[50.8,152.4,"2x6 in strip"],"4x4":[101.6,101.6,"4x4 in square"],"4x3":[101.6,76.2,"4x3 in"],a6:[105,148,"A6"],custom:[0,0,"Custom size"]};
+const PAY={scan:"Scan receipt QR / reference no.",staff:"Staff approves each payment",free:"Free (no payment)"};
+const T={booth:"Booth",event:"Event",design:"Design",settings:"Settings",gallery:"Gallery",station:"Print Station"};
+let S={...DEF},EV=[],act=null,cur=null,rt=0,view="booth",adm=false,stream=null,scanT=null,unsub=null,Qs=null,jobs=[],busy=false;const seen=new Set();
+// ---- storage (IndexedDB) ----
+const dbp=new Promise((res,rej)=>{const r=indexedDB.open("pb",1);r.onupgradeneeded=()=>{const d=r.result;d.createObjectStore("kv");d.createObjectStore("refs");d.createObjectStore("photos",{keyPath:"id"})};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+const tx=async(s,m,f)=>{const d=await dbp;return new Promise((res,rej)=>{const t=d.transaction(s,m),q=f(t.objectStore(s));t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error)})};
+const kvGet=k=>tx("kv","readonly",s=>s.get(k)),kvSet=(k,v)=>tx("kv","readwrite",s=>s.put(v,k)).catch(()=>toast("Storage unavailable"));
+const save=()=>kvSet("S",S),saveEv=()=>{kvSet("EV",EV);kvSet("act",act)};
+function toast(m){const t=$("#toast");t.textContent=m;t.style.display="block";clearTimeout(t._t);t._t=setTimeout(()=>t.style.display="none",5000)}
+const img=s=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=s});
+const tb=c=>new Promise(r=>c.toBlob(r,"image/jpeg",.92));
+const Q=async()=>{if(Qs)return Qs;try{const[db,assets]=await Promise.all([claude.use("db"),claude.use("assets")]);return Qs=db&&assets?{db,assets}:null}catch{return null}};
+// ---- nav ----
+function nav(){$("#nav").innerHTML=(adm?Object.keys(T):["booth"]).map(k=>`<button class="${k==view?"on":""}" data-v="${k}">${T[k]}</button>`).join("")+(adm?`<button data-v="lock">Lock</button>`:`<button class="${view=="pin"?"on":""}" data-v="pin">Admin</button>`);
+ $("#nav").querySelectorAll("button").forEach(b=>b.onclick=()=>go(b.dataset.v))}
+function go(v){if(v=="lock"){adm=false;v="booth"}stop();clearInterval(scanT);unsub&&unsub();unsub=null;view=v;nav();render()}
+function render(){({booth,pin,event:events,design,settings,gallery,station})[view]()}
+// ---- fields ----
+const F=(k,l,t="text",o)=>`<div><label>${l}</label>${t=="sel"?`<select data-k="${k}">${Object.entries(o).map(([v,x])=>`<option value="${v}"${S[k]==v?" selected":""}>${esc(x)}</option>`).join("")}</select>`:t=="chk"?`<input type="checkbox" data-k="${k}"${S[k]?" checked":""}>`:`<input data-k="${k}" type="${t}" value="${esc(S[k])}">`}</div>`;
+function bind(){app.querySelectorAll("[data-k]").forEach(e=>e.onchange=()=>{const k=e.dataset.k;S[k]=e.type=="checkbox"?e.checked:e.type=="number"?+e.value:e.value;if(k=="paper"&&PAPER[S.paper][0]){S.pw=PAPER[S.paper][0];S.ph=PAPER[S.paper][1]}save();render()});
+ app.querySelectorAll("[data-up]").forEach(e=>e.onchange=()=>{const f=e.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{S[e.dataset.up]=r.result;save();render()};r.readAsDataURL(f)})}
+// ---- camera ----
+async function cam(){if(S.test)throw Error("test");if(!stream){try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:1280},height:{ideal:960}},audio:false})}catch(e){if(e.name=="NotAllowedError"||e.name=="SecurityError")throw e;stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false})}}const v=$("#v");if(v){v.srcObject=stream;v.style.transform=S.mirror?"scaleX(-1)":"";v.style.display="block";await v.play().catch(()=>{})}}
+function stop(){stream&&stream.getTracks().forEach(t=>t.stop());stream=null;const v=$("#v");if(v)v.style.display="none"}
+function gray(c,k=1){const x=c.getContext("2d"),d=x.getImageData(0,0,c.width,c.height),p=d.data;for(let i=0;i<p.length;i+=4){let y=.3*p[i]+.59*p[i+1]+.11*p[i+2];y=Math.max(0,Math.min(255,(y-128)*k+128));p[i]=p[i+1]=p[i+2]=y}x.putImageData(d,0,0)}
+function grab(){const v=$("#v"),c=document.createElement("canvas");c.width=v.videoWidth;c.height=v.videoHeight;const x=c.getContext("2d");if(S.mirror){x.translate(c.width,0);x.scale(-1,1)}x.drawImage(v,0,0);if(S.bw)gray(c);return c}
+// ---- compose layout to paper size ----
+const mm=v=>Math.round(v/25.4*S.dpi);
+async function compose(fr,mono,t){const P=t||TP(),cols=P.cols,rows=P.rows,W=mm(S.pw),m=Math.round(W*.05),g=Math.round(W*.02),hh=Math.round(W*.2),fh=Math.round(W*.14),cw=Math.round((W-2*m-(cols-1)*g)/cols);let ch=Math.round(cw*.75),H;
+ if(S.ph>0){H=mm(S.ph);ch=Math.round((H-hh-fh-m-(rows-1)*g)/rows)}else H=hh+rows*ch+(rows-1)*g+fh+m;
+ const c=document.createElement("canvas");c.width=W;c.height=H;const x=c.getContext("2d");x.fillStyle=P.bg;x.fillRect(0,0,W,H);
+ for(let i=0;i<cols*rows;i++){const cx=m+(i%cols)*(cw+g),cy=hh+Math.floor(i/cols)*(ch+g),im=fr[i];if(im){const s=Math.max(cw/im.width,ch/im.height),sw=cw/s,sh=ch/s;x.drawImage(im,(im.width-sw)/2,(im.height-sh)/2,sw,sh,cx,cy,cw,ch)}else{x.fillStyle="#bbb";x.fillRect(cx,cy,cw,ch)}}
+ x.fillStyle=P.ink;x.textAlign="center";x.textBaseline="middle";x.font=`700 ${Math.round(W*.09)}px Georgia,serif`;x.fillText(act?.header||P.header||S.header,W/2,(hh+m)/2,W-2*m);
+ x.font=`${Math.round(W*.06)}px Georgia,serif`;x.fillText(P.footer??S.footer,W/2,H-(fh+m)/2,W-2*m);
+ if(P.frame)x.drawImage(await img(P.frame),0,0,W,H);
+ if(mono)gray(c,1.25);return c}
+// ---- printing ----
+async function lp(u,w,h,n){await img(u);$("#pg").textContent=`@page{size:${w}mm ${h}mm;margin:0}`;$("#pa").innerHTML=Array(n||1).fill(`<img src="${esc(u)}">`).join("");await sleep(200);print();await sleep(300)}
+async function printOut(fr,n=1){const c=await compose(fr,S.mono,cur),b=await tb(c),h=Math.round(c.height/S.dpi*25.4);
+ if(S.remote){const q=await Q();if(q){try{const a=await q.assets.upload(b);await q.db.collection("queue").add({url:a.url,w:S.pw,h,n,status:"new",t:Date.now()});return toast("Sent to the MacBook print station")}catch(e){toast("Remote print failed, printing here")}}}
+ lp(URL.createObjectURL(b),S.pw,h,n)}
+// ---- booth ----
+function booth(){app.innerHTML=`<div class="c"><h1 style="margin:4px">${esc(S.brand)}</h1><p style="color:var(--mut);margin:0 0 8px">${act?esc(act.name):"No event launched"}${S.test?" - TEST MODE":""}</p></div><div class="box"><video id="v" playsinline muted></video><div id="ov"></div></div><div id="ctl" class="c" style="margin-top:12px"></div>`;idle()}
+function idle(){clearInterval(scanT);stop();$("#ov").innerHTML="";rt=0;const p=S.pay;if(!cur&&S.tpls.length>1)return pick();cur=cur||S.tpls[0];
+ $("#ctl").innerHTML=p=="free"?`<button class="p big" id="go">Tap to start</button>`:`<div class="card" style="max-width:420px;margin:auto"><h2 style="margin:0">PHP ${esc(S.price)}</h2><p>Pay with GCash / InstaPay by scanning this QR</p>${S.qr?`<img src="${S.qr}" style="width:100%;max-width:280px">`:"<p>(Upload your InstaPay QR in Settings)</p>"}
+ ${p=="scan"?`<p>Then scan your receipt QR or type the reference no.</p><button class="p" id="sc">Scan receipt QR</button><div style="display:flex;gap:6px;margin:8px 0"><input id="rf" placeholder="Reference no."><button id="rs">Go</button></div>`:""}
+ <div style="display:flex;gap:6px"><input id="pn" type="password" inputmode="numeric" placeholder="Staff PIN"><button id="sf">Staff OK</button></div></div>`;
+ const b=(i,f)=>$(i)&&($(i).onclick=f);b("#go",session);b("#sc",scan);b("#rs",()=>pay($("#rf").value));b("#sf",()=>{if($("#pn").value==S.pin)session();else toast("Wrong PIN")});if(S.tpls.length>1){$("#ctl").insertAdjacentHTML("beforeend",`<p><button id="cf2">Change frame: ${esc(cur.name)}</button></p>`);$("#cf2").onclick=()=>{cur=null;idle()}}}
+function camErr(e){toast(e.name=="NotAllowedError"||e.name=="SecurityError"?"Camera blocked. Allow it in the browser, or turn on Test mode in Settings":"Camera problem ("+e.name+"). Try Test mode in Settings")}
+async function demoShot(i){const c=document.createElement("canvas");c.width=1280;c.height=960;const x=c.getContext("2d"),g=x.createLinearGradient(0,0,1280,960);g.addColorStop(0,`hsl(${i*70+300},80%,60%)`);g.addColorStop(1,`hsl(${i*70+20},80%,45%)`);x.fillStyle=g;x.fillRect(0,0,1280,960);x.fillStyle="#fff";x.font="700 150px system-ui";x.textAlign="center";x.fillText("Test "+(i+1),640,520);if(S.bw)gray(c);return c}
+async function pick(){$("#ctl").innerHTML=`<h2>Choose your frame</h2><div class="th" id="tl"></div>`;for(const t of S.tpls){const c=await compose([],false,t),d=document.createElement("div");c.style.cssText="width:100%;border:1px solid var(--ln);border-radius:8px;background:#fff";d.append(c,t.name);d.style.cssText="cursor:pointer;padding:6px";d.onclick=()=>{cur=t;idle()};const l=$("#tl");if(!l)return;l.append(d)}}
+const FT=(k,l,t="text")=>`<div><label>${l}</label><input data-t="${k}" type="${t}" value="${esc(TP()[k])}"></div>`;
+function design(){const t=TP();app.innerHTML=`<div class="card"><h2>Frames / templates (customers pick one)</h2><div class="g"><div><label>Editing</label><select id="ts">${S.tpls.map((x,i)=>`<option value="${i}"${i==S.ti?" selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div><button id="tn">New</button> <button id="td">Duplicate</button> <button id="tdel">Delete</button></div><div class="card"><div class="g">${FT("name","Template name")}${FT("cols","Columns (1-4)","number")}${FT("rows","Rows (1-4)","number")}${FT("header","Header (blank = event header)")}${FT("footer","Footer text")}${FT("bg","Background","color")}${FT("ink","Text colour","color")}</div><label>Frame overlay (transparent PNG, same ratio as your paper)</label><input type="file" accept="image/png" id="fu"> ${t.frame?`<button id="cf">Remove frame</button>`:""}</div><div class="card c" id="pv"></div>`;
+ app.querySelectorAll("[data-t]").forEach(e=>e.onchange=()=>{t[e.dataset.t]=e.type=="number"?Math.max(1,Math.min(4,+e.value||1)):e.value;save();render()});
+ $("#ts").onchange=e=>{S.ti=+e.target.value;save();render()};
+ $("#tn").onclick=()=>{S.tpls.push(NT());S.ti=S.tpls.length-1;save();render()};
+ $("#td").onclick=()=>{S.tpls.push({...t,name:t.name+" copy"});S.ti=S.tpls.length-1;save();render()};
+ $("#tdel").onclick=()=>{if(S.tpls.length<2)return toast("Keep at least one template");S.tpls.splice(S.ti,1);S.ti=0;cur=null;save();render()};
+ $("#fu").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{t.frame=r.result;save();render()};r.readAsDataURL(f)};
+ $("#cf")&&($("#cf").onclick=()=>{delete t.frame;save();render()});
+ compose([],false,t).then(c=>{c.style.cssText="max-width:100%;max-height:70vh;border:1px solid var(--ln)";$("#pv").append(c)})}
+async function shareSet(b,sh){const fs=[new File([b],"final.jpg",{type:"image/jpeg"}),...sh.map((x,i)=>new File([x],"shot"+(i+1)+".jpg",{type:"image/jpeg"}))];try{if(navigator.canShare&&navigator.canShare({files:fs}))return await navigator.share({files:fs,title:"Photobooth"})}catch(e){if(e.name=="AbortError")return}for(const f of fs)await dl(f.name,f)}
+async function scan(){try{await cam()}catch(e){return S.test?toast("Test mode: type any reference (6+ characters) or use the staff PIN"):camErr(e)}
+ $("#ctl").innerHTML=`<p>Point the camera at the receipt QR</p><button id="cx">Cancel</button>`;$("#cx").onclick=idle;
+ const c=document.createElement("canvas"),x=c.getContext("2d",{willReadFrequently:true});
+ scanT=setInterval(()=>{const v=$("#v");if(!v||!v.videoWidth)return;c.width=640;c.height=Math.round(640*v.videoHeight/v.videoWidth);x.drawImage(v,0,0,c.width,c.height);const d=x.getImageData(0,0,c.width,c.height),r=jsQR(d.data,d.width,d.height);if(r&&r.data){clearInterval(scanT);pay(r.data)}},300)}
+async function pay(r){r=(r||"").trim();if(r.length<6){toast("Invalid reference");return idle()}const k=r.toUpperCase();
+ if(await tx("refs","readonly",s=>s.get(k)).catch(()=>0)){toast("This code was already used");return idle()}
+ await tx("refs","readwrite",s=>s.put({t:Date.now(),ev:act?.id||""},k)).catch(()=>0);session()}
+async function session(){const demo=S.test;if(!demo)try{await cam()}catch(e){camErr(e);return idle()}
+ const n=cur.cols*cur.rows,fr=[];$("#ctl").innerHTML="";
+ for(let i=0;i<n;i++){for(let s=S.cd;s>0;s--){$("#ov").textContent=s;await sleep(1000)}$("#ov").textContent="";fr.push(demo?await demoShot(i):grab());await sleep(600)}
+ stop();done(fr)}
+async function done(fr){const c=await compose(fr,false,cur),b=await tb(c),sh=await Promise.all(fr.map(x=>tb(x))),u=URL.createObjectURL(b),al=act?.album||S.album;
+ tx("photos","readwrite",s=>s.put({id:Date.now().toString(36),event:act?.id||"",t:Date.now(),blob:b,shots:sh})).catch(()=>toast("Could not store photo"));
+ $("#ctl").innerHTML=`<img src="${u}" style="max-height:55vh;max-width:100%;border-radius:8px"><div style="margin:10px"><select id="cp" style="width:auto">${Array.from({length:Math.max(1,S.copies)},(_,i)=>`<option value="${i+1}">${i+1} print${i?"s":""}</option>`).join("")}</select> <button class="p" id="pr">Print</button> ${rt<S.retakes?`<button id="rt">Retake (${S.retakes-rt} left)</button>`:""} <button id="ad">AirDrop / Share</button> <button id="dn">Done</button></div>${al?`<p>Scan to open the event album</p><div id="qr" style="display:inline-block;background:#fff;padding:8px"></div>`:""}`;
+ if(al)new QRCode($("#qr"),{text:al,width:160,height:160});
+ $("#pr").onclick=()=>printOut(fr,+$("#cp").value);$("#dn").onclick=()=>{cur=null;idle()};$("#ad").onclick=()=>shareSet(b,sh);$("#rt")&&($("#rt").onclick=()=>{rt++;session()});if(S.auto)printOut(fr,1)}
+async function dl(n,b){try{const d=await claude.use("downloads");d?await d.save({filename:n,data:b}):toast("Download unavailable")}catch(e){toast("Download cancelled")}}
+// ---- admin views ----
+function pin(){app.innerHTML=`<div class="card" style="max-width:320px;margin:auto"><label>Admin PIN</label><input id="ap" type="password" inputmode="numeric"><br><br><button class="p" id="ak">Unlock</button></div>`;$("#ak").onclick=()=>{if($("#ap").value==S.pin){adm=true;go("settings")}else toast("Wrong PIN")}}
+function events(){app.innerHTML=`<div class="card"><h2>Launch an event</h2><div class="g"><div><label>Event name</label><input id="en"></div><div><label>Photo header text</label><input id="eh"></div><div><label>Album link for the share QR (Drive / Google Photos folder)</label><input id="ea" placeholder="https://"></div></div><button class="p" id="ec">Create and launch</button> ${act?`<button id="ee">End current event</button>`:""}</div>
+ ${EV.map(e=>`<div class="card"><b>${esc(e.name)}</b> ${act?.id==e.id?"(live)":""}<br><small>${esc(e.header)} ${esc(e.album)}</small><br><button data-l="${e.id}">Launch</button> <button data-x="${e.id}">Delete</button></div>`).join("")}`;
+ $("#ec").onclick=()=>{const n=$("#en").value.trim();if(!n)return toast("Enter a name");const e={id:Date.now().toString(36),name:n,header:$("#eh").value||n,album:$("#ea").value.trim()};EV.push(e);act=e;saveEv();render()};
+ $("#ee")&&($("#ee").onclick=()=>{act=null;saveEv();render()});
+ app.querySelectorAll("[data-l]").forEach(b=>b.onclick=()=>{act=EV.find(e=>e.id==b.dataset.l);saveEv();render()});
+ app.querySelectorAll("[data-x]").forEach(b=>b.onclick=()=>{EV=EV.filter(e=>e.id!=b.dataset.x);if(act&&act.id==b.dataset.x)act=null;saveEv();render()})}
+function design_unused(){app.innerHTML=`<div class="card"><h2>Frame and layout</h2><div class="g">${F("header","Header text (when no event)")}${F("footer","Footer text")}${F("bg","Background","color")}${F("ink","Text colour","color")}${F("layout","Layout","sel",Object.fromEntries(Object.entries(LAY).map(([k,v])=>[k,v[2]])))}</div>
+ <label>Frame overlay (transparent PNG, sized like your paper)</label><input type="file" accept="image/png" data-up="frame"> ${S.frame?`<button id="cf">Remove frame</button>`:""}</div><div class="card c" id="pv"></div>`;bind();
+ $("#cf")&&($("#cf").onclick=()=>{delete S.frame;save();render()});compose([]).then(c=>{c.style.cssText="max-width:100%;max-height:70vh;border:1px solid var(--ln)";$("#pv").append(c)})}
+function settings(){app.innerHTML=`<div class="card"><h2>Booth</h2><div class="g">${F("brand","Business name")}${F("cd","Countdown (sec)","number")}${F("test","Test mode (no camera, sample photos)","chk")}${F("mirror","Mirror camera","chk")}${F("bw","Black and white photos","chk")}${F("auto","Auto-print after each session","chk")}</div></div>
+ <div class="card"><h2>Payment (GCash / InstaPay)</h2><div class="g">${F("pay","Mode","sel",PAY)}${F("price","Price (PHP)","number")}${F("pin","Staff / admin PIN","password")}</div><label>Your InstaPay QR image</label><input type="file" accept="image/*" data-up="qr"></div>
+ <div class="card"><h2>Paper and printing</h2><div class="g">${F("paper","Paper","sel",Object.fromEntries(Object.entries(PAPER).map(([k,v])=>[k,v[2]])))}${F("pw","Width (mm)","number")}${F("ph","Height (mm, 0 = auto)","number")}${F("dpi","Printer DPI","number")}${F("copies","Max prints per customer","number")}${F("retakes","Retakes per customer","number")}${F("mono","Black and white for thermal","chk")}${F("remote","Send prints to MacBook station","chk")}</div></div>`;bind()}
+async function gallery(){const all=(await tx("photos","readonly",s=>s.getAll()).catch(()=>[])).sort((a,b)=>b.t-a.t);
+ app.innerHTML=`<div class="card"><h2>${all.length} photos</h2><div class="th">${all.map(p=>`<div><img src="${URL.createObjectURL(p.blob)}"><small>${esc((EV.find(e=>e.id==p.event)||{}).name||"")}</small><br><button data-s="${p.id}">AirDrop</button> <button data-r="${p.id}">Print</button> <button data-d="${p.id}">Del</button></div>`).join("")}</div></div>`;
+ const get=id=>all.find(p=>p.id==id);app.querySelectorAll("[data-s]").forEach(b=>b.onclick=()=>{const p=get(b.dataset.s);shareSet(p.blob,p.shots||[])});
+ app.querySelectorAll("[data-r]").forEach(b=>b.onclick=async()=>{const u=URL.createObjectURL(get(b.dataset.r).blob),i=await img(u);lp(u,S.pw,Math.round(S.pw*i.height/i.width),1)});
+ app.querySelectorAll("[data-d]").forEach(b=>b.onclick=async()=>{await tx("photos","readwrite",s=>s.delete(b.dataset.d));gallery()})}
+async function station(){app.innerHTML=`<div class="card"><h2>Print Station (MacBook)</h2><p>Keep this tab open on the MacBook, signed in to the same account as the iPad. New jobs print automatically.</p><div class="g">${F("auto","Auto-print incoming jobs","chk")}</div><p id="jb"></p><button class="p" id="pn2">Print waiting jobs</button></div>`;bind();
+ $("#pn2").onclick=run;const q=await Q();if(!q){$("#jb").textContent="Remote queue unavailable on this device.";return}
+ unsub=q.db.collection("queue").where("status","==","new").onSnapshot(s=>{jobs=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>a.t-b.t);$("#jb")&&($("#jb").textContent=jobs.length+" job(s) waiting");if(S.auto)run()},e=>$("#jb").textContent="Error: "+e.code)}
+async function run(){if(busy||!Qs)return;busy=true;try{for(const j of jobs){if(seen.has(j.id))continue;seen.add(j.id);await lp(j.url,j.w,j.h,j.n);await Qs.db.collection("queue").doc(j.id).update({status:"done"})}}catch(e){toast("Print error")}busy=false}
+(async()=>{try{S={...DEF,...(await kvGet("S")||{})};S.tpls=S.tpls&&S.tpls.length?S.tpls:[{...NT(),name:"Grid 2x2",cols:2,rows:2},{...NT(),name:"Duo",cols:1,rows:2},{...NT(),name:"Single",cols:1,rows:1}];S.ti=S.ti||0;if(S.dpi==203)S.dpi=300;if(!S.v2){S.v2=1;S.paper="2x6";S.pw=50.8;S.ph=152.4;S.tpls.unshift({...NT(),name:"Strip x4 (2x6)",cols:1,rows:4});S.ti=0;save()}EV=await kvGet("EV")||[];act=await kvGet("act")||null}catch(e){}nav();render()})();
+</script></body></html>
